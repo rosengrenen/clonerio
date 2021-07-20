@@ -1,4 +1,4 @@
-use cgmath::{Matrix, Matrix4, Vector3};
+use cgmath::{Matrix, Matrix2, Matrix4, Vector3, Vector4};
 use gl::types::*;
 use std::{
     ffi::{CStr, CString},
@@ -37,6 +37,13 @@ impl Shader {
         }
     }
 
+    pub fn set_mat2(&self, name: &CStr, matrix: Matrix2<f32>) {
+        unsafe {
+            let location = gl::GetUniformLocation(self.id, name.as_ptr());
+            gl::UniformMatrix2fv(location, 1, gl::FALSE, matrix.as_ptr());
+        }
+    }
+
     pub fn set_mat4(&self, name: &CStr, matrix: Matrix4<f32>) {
         unsafe {
             let location = gl::GetUniformLocation(self.id, name.as_ptr());
@@ -48,6 +55,20 @@ impl Shader {
         unsafe {
             let location = gl::GetUniformLocation(self.id, name.as_ptr());
             gl::Uniform3f(location, vec.x, vec.y, vec.z);
+        }
+    }
+
+    pub fn set_vec4(&self, name: &CStr, vec: Vector4<f32>) {
+        unsafe {
+            let location = gl::GetUniformLocation(self.id, name.as_ptr());
+            gl::Uniform4f(location, vec.x, vec.y, vec.z, vec.w);
+        }
+    }
+
+    pub fn set_int(&self, name: &CStr, int: i32) {
+        unsafe {
+            let location = gl::GetUniformLocation(self.id, name.as_ptr());
+            gl::Uniform1i(location, int);
         }
     }
 

@@ -1,22 +1,28 @@
 mod keyboard;
 mod shader;
 
-use std::{ffi::CString, mem, time::Instant};
+use std::{
+    ffi::{c_void, CString},
+    mem,
+    time::Instant,
+};
 
-use cgmath::{ortho, point2, point3, vec2, vec3, Matrix4, Point2, Rad, Vector3};
+use cgmath::{
+    ortho, point2, point3, vec2, vec3, vec4, Deg, Matrix2, Matrix4, Point2, Rad, Vector3,
+};
 use gl::types::*;
 use glutin::event::ElementState;
 use keyboard::KeyboardState;
 use shader::Shader;
 
 // Vertex data
-static QUAD_DATA: [GLfloat; 12] = [
-    0.5, 0.5, // top right
-    -0.5, 0.5, // top left
-    -0.5, -0.5, // bottom left
-    -0.5, -0.5, // bottom left
-    0.5, -0.5, // bottom right
-    0.5, 0.5, // top right
+static QUAD_DATA: [GLfloat; 24] = [
+    0.5, 0.5, 1.0, 1.0, // top right
+    -0.5, 0.5, 0.0, 1.0, // top left
+    -0.5, -0.5, 0.0, 0.0, // bottom left
+    -0.5, -0.5, 0.0, 0.0, // bottom left
+    0.5, -0.5, 1.0, 0.0, // bottom right
+    0.5, 0.5, 1.0, 1.0, // top right
 ];
 
 static LINE_DATA: [GLfloat; 4] = [
@@ -37,7 +43,45 @@ fn main() {
     // Load the OpenGL function pointers
     gl::load_with(|symbol| gl_window.get_proc_address(symbol));
 
-    let shader = Shader::from_file("base.vert", "base.frag");
+    let base_shader = Shader::from_file("base.vert", "base.frag");
+    let tex_shader = Shader::from_file("texture.vert", "texture.frag");
+
+    unsafe {
+        gl::Enable(gl::BLEND);
+        gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+    }
+
+    let image = image::open("assets/textures/belt-1.png").unwrap().flipv();
+    let image = image.as_rgba8().unwrap();
+    let mut tex = 0;
+
+    unsafe {
+        // load texture
+        gl::CreateTextures(gl::TEXTURE_2D, 1, &mut tex);
+        gl::TextureParameteri(tex, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+        gl::TextureParameteri(tex, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+        gl::TextureParameteri(tex, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TextureParameteri(tex, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+
+        gl::TextureStorage2D(
+            tex,
+            1,
+            gl::RGBA8,
+            image.width() as i32,
+            image.height() as i32,
+        );
+        gl::TextureSubImage2D(
+            tex,
+            0,
+            0,
+            0,
+            image.width() as i32,
+            image.height() as i32,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            image.as_raw().as_ptr() as *const c_void,
+        );
+    }
 
     let mut quad_vao = 0;
     let mut line_vao = 0;
@@ -60,12 +104,24 @@ fn main() {
             0,
             vbo,
             0,
-            2 * mem::size_of::<GLfloat>() as GLsizei,
+            4 * mem::size_of::<GLfloat>() as GLsizei,
         );
 
         gl::EnableVertexArrayAttrib(quad_vao, 0);
+        gl::EnableVertexArrayAttrib(quad_vao, 1);
+
         gl::VertexArrayAttribFormat(quad_vao, 0, 2, gl::FLOAT, gl::FALSE, 0);
+        gl::VertexArrayAttribFormat(
+            quad_vao,
+            1,
+            2,
+            gl::FLOAT,
+            gl::FALSE,
+            2 * mem::size_of::<GLfloat>() as GLuint,
+        );
+
         gl::VertexArrayAttribBinding(quad_vao, 0, 0);
+        gl::VertexArrayAttribBinding(quad_vao, 1, 0);
 
         // line
         let mut vbo = 0;
@@ -93,6 +149,8 @@ fn main() {
     }
 
     let mut camera = Camera::new();
+    camera.position.x = 300.0;
+    camera.position.y = 300.0;
 
     let mut keyboard_state = KeyboardState::new();
 
@@ -104,10 +162,14 @@ fn main() {
 
     let mut zoom = 2.0;
 
-    let mut debug_grid = false;
+    let mut debug_grid = true;
     let mut show_fps = false;
 
     let mut last_update_time = Instant::now();
+
+    let mut current_belt = Belt::new();
+
+    let mut is_placing = true;
 
     event_loop.run(move |event, _, control_flow| {
         use glutin::event::{
@@ -161,6 +223,28 @@ fn main() {
                     if virtual_keycode == VirtualKeyCode::F && state == ElementState::Pressed {
                         show_fps = !show_fps;
                     }
+
+                    if virtual_keycode == VirtualKeyCode::R && state == ElementState::Pressed {
+                        if is_placing {
+                            current_belt.input = current_belt.input.rotate_clockwise();
+                            current_belt.output = current_belt.output.rotate_clockwise();
+                        }
+                    }
+
+                    if virtual_keycode == VirtualKeyCode::T && state == ElementState::Pressed {
+                        if is_placing {
+                            current_belt.output = match current_belt.turn() {
+                                Turn::Right => {
+                                    current_belt.output.rotate_clockwise().rotate_clockwise()
+                                }
+                                _ => current_belt.output.rotate_clockwise(),
+                            };
+                        }
+                    }
+
+                    if virtual_keycode == VirtualKeyCode::Space && state == ElementState::Pressed {
+                        is_placing = !is_placing;
+                    }
                 }
                 DeviceEvent::MouseWheel { delta } => match delta {
                     MouseScrollDelta::LineDelta(_, y) => {
@@ -205,22 +289,27 @@ fn main() {
 
             let mouse_in_grid =
                 mouse_grid_x >= 0 && mouse_grid_x < 128 && mouse_grid_y >= 0 && mouse_grid_y < 128;
-            if mouse_in_grid {
+            if is_placing && mouse_in_grid {
                 if mouse_left {
-                    grid.tiles[mouse_grid_y as usize][mouse_grid_x as usize] = 1;
+                    grid.place_belt(mouse_grid_x as isize, mouse_grid_y as isize, current_belt);
                 }
+
                 if mouse_right {
-                    grid.tiles[mouse_grid_y as usize][mouse_grid_x as usize] = 0;
+                    grid.clear_tile(mouse_grid_x as usize, mouse_grid_y as usize);
                 }
             }
 
             let start = Instant::now();
             unsafe {
-                gl::ClearColor(0.3, 0.3, 0.3, 1.0);
+                gl::ClearColor(0.3, 0.3, 0.6, 1.0);
                 gl::Clear(gl::COLOR_BUFFER_BIT);
-                shader.enable();
-                shader.set_mat4(&CString::new("view").unwrap(), camera.view_matrix());
-                shader.set_mat4(
+
+                gl::BindTextureUnit(0, tex);
+
+                tex_shader.enable();
+                tex_shader.set_int(&CString::new("atlas_size").unwrap(), 2);
+                tex_shader.set_mat4(&CString::new("view").unwrap(), camera.view_matrix());
+                tex_shader.set_mat4(
                     &CString::new("projection").unwrap(),
                     camera.projection_matrix(
                         window_size.width as f32,
@@ -230,22 +319,9 @@ fn main() {
                 );
                 gl::BindVertexArray(quad_vao);
 
-                if mouse_in_grid && grid.tiles[mouse_grid_y as usize][mouse_grid_x as usize] == 0 {
-                    shader.set_vec3(&CString::new("color").unwrap(), vec3(0.3, 0.3, 1.0));
-                    let model_scale = Matrix4::from_nonuniform_scale(32.0, 32.0, 0.0);
-                    let model_trans = Matrix4::from_translation(cgmath::vec3(
-                        16.0 + 32.0 * mouse_grid_x as f32,
-                        16.0 + 32.0 * mouse_grid_y as f32,
-                        0.0,
-                    ));
-                    let model = model_trans * model_scale;
-                    shader.set_mat4(&CString::new("model").unwrap(), model);
-                    gl::DrawArrays(gl::TRIANGLES, 0, 6);
-                }
-
                 for (y, row) in grid.tiles.iter().enumerate() {
                     for (x, tile) in row.iter().enumerate() {
-                        if *tile > 0 {
+                        if let Some(belt) = tile {
                             let model_scale = Matrix4::from_nonuniform_scale(32.0, 32.0, 0.0);
                             let model_trans = Matrix4::from_translation(cgmath::vec3(
                                 16.0 + 32.0 * x as f32,
@@ -253,22 +329,89 @@ fn main() {
                                 0.0,
                             ));
                             let model = model_trans * model_scale;
-                            shader.set_mat4(&CString::new("model").unwrap(), model);
-                            shader.set_vec3(&CString::new("color").unwrap(), vec3(0.0, 0.0, 1.0));
+
+                            let tex_angle = match belt.input {
+                                Direction::West => 90.0,
+                                Direction::North => 180.0,
+                                Direction::East => 270.0,
+                                Direction::South => 0.0,
+                            };
+                            let tex_rot = Matrix2::from_angle(Deg(tex_angle));
+
+                            let atlas_index = match belt.turn() {
+                                Turn::Left => 0,
+                                Turn::Forward => 2,
+                                Turn::Right => 3,
+                            };
+
+                            tex_shader.set_mat4(&CString::new("model").unwrap(), model);
+                            tex_shader.set_vec4(
+                                &CString::new("color").unwrap(),
+                                vec4(1.0, 1.0, 1.0, 1.0),
+                            );
+                            tex_shader.set_mat2(&CString::new("tex_rot").unwrap(), tex_rot);
+                            tex_shader.set_int(&CString::new("atlas_index").unwrap(), atlas_index);
+
                             gl::DrawArrays(gl::TRIANGLES, 0, 6);
                         }
                     }
                 }
 
+                if is_placing && mouse_in_grid {
+                    let current_belt = grid.calculate_belt_position(
+                        mouse_grid_x as isize,
+                        mouse_grid_y as isize,
+                        current_belt,
+                    );
+                    let model_scale = Matrix4::from_nonuniform_scale(32.0, 32.0, 0.0);
+                    let model_trans = Matrix4::from_translation(cgmath::vec3(
+                        16.0 + 32.0 * mouse_grid_x as f32,
+                        16.0 + 32.0 * mouse_grid_y as f32,
+                        0.0,
+                    ));
+                    let model = model_trans * model_scale;
+
+                    let tex_angle = match current_belt.input {
+                        Direction::West => 90.0,
+                        Direction::North => 180.0,
+                        Direction::East => 270.0,
+                        Direction::South => 0.0,
+                    };
+                    let tex_rot = Matrix2::from_angle(Deg(tex_angle));
+
+                    let atlas_index = match current_belt.turn() {
+                        Turn::Left => 0,
+                        Turn::Forward => 2,
+                        Turn::Right => 3,
+                    };
+
+                    tex_shader.set_vec4(&CString::new("color").unwrap(), vec4(1.0, 1.0, 1.0, 0.4));
+                    tex_shader.set_mat4(&CString::new("model").unwrap(), model);
+                    tex_shader.set_mat2(&CString::new("tex_rot").unwrap(), tex_rot);
+                    tex_shader.set_int(&CString::new("atlas_index").unwrap(), atlas_index);
+
+                    gl::DrawArrays(gl::TRIANGLES, 0, 6);
+                }
+
                 if debug_grid {
                     gl::BindVertexArray(line_vao);
-                    shader.set_vec3(&CString::new("color").unwrap(), vec3(0.0, 0.0, 0.0));
+                    base_shader.enable();
+                    base_shader.set_mat4(&CString::new("view").unwrap(), camera.view_matrix());
+                    base_shader.set_mat4(
+                        &CString::new("projection").unwrap(),
+                        camera.projection_matrix(
+                            window_size.width as f32,
+                            window_size.height as f32,
+                            zoom,
+                        ),
+                    );
+                    base_shader.set_vec3(&CString::new("color").unwrap(), vec3(0.0, 0.0, 0.0));
                     for y in 0..=128 {
                         let model_scale = Matrix4::from_nonuniform_scale(32.0 * 128.0, 0.0, 0.0);
                         let model_trans =
                             Matrix4::from_translation(cgmath::vec3(0.0, y as f32 * 32.0, 0.0));
                         let model = model_trans * model_scale;
-                        shader.set_mat4(&CString::new("model").unwrap(), model);
+                        base_shader.set_mat4(&CString::new("model").unwrap(), model);
                         gl::DrawArrays(gl::LINES, 0, 2);
                     }
                     for x in 0..=128 {
@@ -278,7 +421,7 @@ fn main() {
                         let model_trans =
                             Matrix4::from_translation(cgmath::vec3(x as f32 * 32.0, 0.0, 0.0));
                         let model = model_trans * model_rot * model_scale;
-                        shader.set_mat4(&CString::new("model").unwrap(), model);
+                        base_shader.set_mat4(&CString::new("model").unwrap(), model);
                         gl::DrawArrays(gl::LINES, 0, 2);
                     }
                 }
@@ -286,7 +429,7 @@ fn main() {
             let dur = Instant::now() - start;
             let ms = dur.as_nanos() as f64 / 1_000_000.0;
             if show_fps {
-                println!("FPS: {}\tRender time: {}ms", 1000.0 / ms, ms);
+                println!("Render time: {}ms", ms);
             }
             gl_window.swap_buffers().unwrap();
         }
@@ -336,13 +479,248 @@ impl Camera {
 }
 
 struct Grid {
-    tiles: [[u32; 128]; 128],
+    tiles: [[Option<Belt>; 128]; 128],
 }
 
 impl Grid {
     fn new() -> Self {
         Self {
-            tiles: [[0; 128]; 128],
+            tiles: [[None; 128]; 128],
         }
     }
+
+    fn place_belt(&mut self, x: isize, y: isize, belt: Belt) {
+        let belt = self.calculate_belt_position(x, y, belt);
+        // Adjust input of belt in front
+        // - -
+        //   |
+        // front belt direction west/east
+        // current belt direction north
+        if let (Some(mut front_belt), (front_belt_x, front_belt_y)) =
+            self.belt_in_front_of(x, y, belt)
+        {
+            if (front_belt.input == belt.output.rotate_clockwise()
+                || front_belt.input == belt.output.rotate_anti_clockwise())
+                && self
+                    .belt_behind(front_belt_x, front_belt_y, front_belt)
+                    .0
+                    .is_none()
+            {
+                front_belt.input = belt.output.flip();
+                self.set_belt_in_front_of(x, y, belt, front_belt);
+            } else if front_belt.output == belt.output.rotate_clockwise()
+                || front_belt.output == belt.output.rotate_anti_clockwise()
+            {
+                if front_belt.input == belt.output {
+                    front_belt.input = front_belt.output.flip();
+                    self.set_belt_in_front_of(x, y, belt, front_belt);
+                }
+            } else if front_belt.output == belt.output && front_belt.input != belt.output.flip() {
+                front_belt.input = front_belt.output.flip();
+                self.set_belt_in_front_of(x, y, belt, front_belt);
+            }
+        }
+
+        println!("placed {:?}", belt);
+
+        self.set_belt(x, y, belt);
+    }
+
+    fn calculate_belt_position(&self, x: isize, y: isize, mut belt: Belt) -> Belt {
+        let (belt_behind, _) = self.belt_behind(x, y, belt);
+        if let Some(belt_behind) = belt_behind {
+            if belt_behind.output == belt.input.flip() {
+                return belt;
+            }
+        }
+
+        let (left_belt, a) = self.belt_left_of(x, y, belt);
+        let (right_belt, b) = self.belt_right_of(x, y, belt);
+        if left_belt.is_some() && right_belt.is_some() {
+            let left_belt = left_belt.unwrap();
+            let right_belt = right_belt.unwrap();
+
+            let left_belt_facing_into = left_belt.output == belt.output.rotate_clockwise();
+            let right_belt_facing_into = right_belt.output == belt.output.rotate_anti_clockwise();
+
+            if left_belt_facing_into && !right_belt_facing_into {
+                belt.input = left_belt.output.flip();
+            } else if !left_belt_facing_into && right_belt_facing_into {
+                belt.input = right_belt.output.flip();
+            }
+        } else if let Some(left_belt) = left_belt {
+            let left_belt_facing_into = left_belt.output == belt.output.rotate_clockwise();
+
+            if left_belt_facing_into {
+                belt.input = left_belt.output.flip();
+            }
+        } else if let Some(right_belt) = right_belt {
+            let right_belt_facing_into = right_belt.output == belt.output.rotate_anti_clockwise();
+
+            if right_belt_facing_into {
+                belt.input = right_belt.output.flip();
+            }
+        }
+
+        belt
+    }
+
+    fn clear_tile(&mut self, x: usize, y: usize) {
+        self.tiles[y][x] = None;
+    }
+
+    fn get_belt(&self, x: isize, y: isize) -> Option<Belt> {
+        if x >= 0 && x < self.tiles[0].len() as isize && y >= 0 && y < self.tiles.len() as isize {
+            self.tiles[y as usize][x as usize]
+        } else {
+            None
+        }
+    }
+
+    fn set_belt(&mut self, x: isize, y: isize, belt: Belt) {
+        if x >= 0 && x < self.tiles[0].len() as isize && y >= 0 && y < self.tiles.len() as isize {
+            self.tiles[y as usize][x as usize] = Some(belt);
+        }
+    }
+
+    fn left_pos(x: isize, y: isize, belt: Belt) -> (isize, isize) {
+        match belt.output {
+            Direction::West => (x, y - 1),
+            Direction::North => (x - 1, y),
+            Direction::East => (x, y + 1),
+            Direction::South => (x + 1, y),
+        }
+    }
+
+    fn right_pos(x: isize, y: isize, belt: Belt) -> (isize, isize) {
+        match belt.output {
+            Direction::West => (x, y + 1),
+            Direction::North => (x + 1, y),
+            Direction::East => (x, y - 1),
+            Direction::South => (x - 1, y),
+        }
+    }
+
+    fn front_pos(x: isize, y: isize, belt: Belt) -> (isize, isize) {
+        match belt.output {
+            Direction::West => (x - 1, y),
+            Direction::North => (x, y + 1),
+            Direction::East => (x + 1, y),
+            Direction::South => (x, y - 1),
+        }
+    }
+
+    fn behind_pos(x: isize, y: isize, belt: Belt) -> (isize, isize) {
+        match belt.input {
+            Direction::West => (x - 1, y),
+            Direction::North => (x, y + 1),
+            Direction::East => (x + 1, y),
+            Direction::South => (x, y - 1),
+        }
+    }
+
+    fn belt_left_of(&self, x: isize, y: isize, belt: Belt) -> (Option<Belt>, (isize, isize)) {
+        let (x, y) = Self::left_pos(x, y, belt);
+        (self.get_belt(x, y), (x, y))
+    }
+
+    fn belt_right_of(&self, x: isize, y: isize, belt: Belt) -> (Option<Belt>, (isize, isize)) {
+        let (x, y) = Self::right_pos(x, y, belt);
+        (self.get_belt(x, y), (x, y))
+    }
+
+    fn belt_in_front_of(&self, x: isize, y: isize, belt: Belt) -> (Option<Belt>, (isize, isize)) {
+        let (x, y) = Self::front_pos(x, y, belt);
+        (self.get_belt(x, y), (x, y))
+    }
+
+    fn set_belt_in_front_of(&mut self, x: isize, y: isize, belt: Belt, new_belt: Belt) {
+        let (x, y) = Self::front_pos(x, y, belt);
+        self.set_belt(x, y, new_belt);
+    }
+
+    fn belt_behind(&self, x: isize, y: isize, belt: Belt) -> (Option<Belt>, (isize, isize)) {
+        let (x, y) = Self::behind_pos(x, y, belt);
+        (self.get_belt(x, y), (x, y))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Belt {
+    input: Direction,
+    output: Direction,
+}
+
+impl Belt {
+    fn new() -> Self {
+        Self {
+            input: Direction::West,
+            output: Direction::East,
+        }
+    }
+}
+
+impl Belt {
+    fn turn(&self) -> Turn {
+        let dir = self.input.rotate_clockwise();
+        if dir == self.output {
+            return Turn::Left;
+        }
+
+        let dir = dir.rotate_clockwise();
+        if dir == self.output {
+            return Turn::Forward;
+        }
+
+        let dir = dir.rotate_clockwise();
+        if dir == self.output {
+            return Turn::Right;
+        }
+
+        panic!();
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Direction {
+    West,
+    North,
+    East,
+    South,
+}
+
+impl Direction {
+    fn rotate_clockwise(&self) -> Self {
+        match *self {
+            Self::West => Self::North,
+            Self::North => Self::East,
+            Self::East => Self::South,
+            Self::South => Self::West,
+        }
+    }
+
+    fn rotate_anti_clockwise(&self) -> Self {
+        match *self {
+            Self::West => Self::South,
+            Self::North => Self::West,
+            Self::East => Self::North,
+            Self::South => Self::East,
+        }
+    }
+
+    fn flip(&self) -> Self {
+        match *self {
+            Self::West => Self::East,
+            Self::North => Self::South,
+            Self::East => Self::West,
+            Self::South => Self::North,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Turn {
+    Left,
+    Forward,
+    Right,
 }
