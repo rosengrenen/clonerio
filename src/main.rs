@@ -216,35 +216,6 @@ fn main() {
                     ..
                 }) => {
                     keyboard_state.process_event(state, virtual_keycode);
-                    if virtual_keycode == VirtualKeyCode::G && state == ElementState::Pressed {
-                        debug_grid = !debug_grid;
-                    }
-
-                    if virtual_keycode == VirtualKeyCode::F && state == ElementState::Pressed {
-                        show_fps = !show_fps;
-                    }
-
-                    if virtual_keycode == VirtualKeyCode::R && state == ElementState::Pressed {
-                        if is_placing {
-                            current_belt.input = current_belt.input.rotate_clockwise();
-                            current_belt.output = current_belt.output.rotate_clockwise();
-                        }
-                    }
-
-                    if virtual_keycode == VirtualKeyCode::T && state == ElementState::Pressed {
-                        if is_placing {
-                            current_belt.output = match current_belt.turn() {
-                                Turn::Right => {
-                                    current_belt.output.rotate_clockwise().rotate_clockwise()
-                                }
-                                _ => current_belt.output.rotate_clockwise(),
-                            };
-                        }
-                    }
-
-                    if virtual_keycode == VirtualKeyCode::Space && state == ElementState::Pressed {
-                        is_placing = !is_placing;
-                    }
                 }
                 DeviceEvent::MouseWheel { delta } => match delta {
                     MouseScrollDelta::LineDelta(_, y) => {
@@ -266,16 +237,43 @@ fn main() {
         if ms_since_last_update > 16.666 {
             last_update_time = now;
 
+            if keyboard_state.was_pressed(VirtualKeyCode::G) {
+                debug_grid = !debug_grid;
+            }
+
+            if keyboard_state.was_pressed(VirtualKeyCode::F) {
+                show_fps = !show_fps;
+            }
+
+            if is_placing {
+                if keyboard_state.was_pressed(VirtualKeyCode::R) {
+                    current_belt.input = current_belt.input.rotate_clockwise();
+                    current_belt.output = current_belt.output.rotate_clockwise();
+                }
+
+                if keyboard_state.was_pressed(VirtualKeyCode::T) {
+                    current_belt.output = match current_belt.turn() {
+                        Turn::Right => current_belt.output.rotate_clockwise().rotate_clockwise(),
+                        _ => current_belt.output.rotate_clockwise(),
+                    };
+                }
+            }
+
+            if keyboard_state.was_pressed(VirtualKeyCode::Space) {
+                is_placing = !is_placing;
+            }
+
+            println!("{}", zoom);
             if keyboard_state.is_pressed(VirtualKeyCode::W) {
-                camera.move_vertical(4.0);
+                camera.move_vertical(10.0 / zoom);
             } else if keyboard_state.is_pressed(VirtualKeyCode::S) {
-                camera.move_vertical(-4.0);
+                camera.move_vertical(-10.0 / zoom);
             }
 
             if keyboard_state.is_pressed(VirtualKeyCode::D) {
-                camera.move_horizontal(4.0);
+                camera.move_horizontal(10.0 / zoom);
             } else if keyboard_state.is_pressed(VirtualKeyCode::A) {
-                camera.move_horizontal(-4.0);
+                camera.move_horizontal(-10.0 / zoom);
             }
 
             let window_size = gl_window.window().inner_size();
@@ -432,6 +430,7 @@ fn main() {
                 println!("Render time: {}ms", ms);
             }
             gl_window.swap_buffers().unwrap();
+            keyboard_state.clear_momentary_state();
         }
     });
 }
@@ -520,8 +519,6 @@ impl Grid {
                 self.set_belt_in_front_of(x, y, belt, front_belt);
             }
         }
-
-        println!("placed {:?}", belt);
 
         self.set_belt(x, y, belt);
     }
