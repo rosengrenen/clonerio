@@ -1,19 +1,21 @@
+mod camera;
+mod grid;
 mod keyboard;
-mod shader;
+mod renderer;
 
-use std::{
-    ffi::{c_void, CString},
-    mem,
-    time::Instant,
-};
+use std::{ffi::CString, time::Instant};
 
-use cgmath::{
-    ortho, point2, point3, vec2, vec3, vec4, Deg, Matrix2, Matrix4, Point2, Rad, Vector3,
-};
+use cgmath::{vec2, vec3, vec4, Deg, Matrix2, Matrix4, Rad};
 use gl::types::*;
 use glutin::event::ElementState;
 use keyboard::KeyboardState;
-use shader::Shader;
+use renderer::{shader::Shader, texture::Texture, vertex_buffer::VertexBuffer};
+
+use crate::{
+    camera::Camera,
+    grid::{Belt, Direction, Grid, Turn},
+    renderer::{debug::DebugCallback, vertex_array::VertexArray, VertexBufferElement},
+};
 
 // Vertex data
 static QUAD_DATA: [GLfloat; 24] = [
@@ -49,104 +51,33 @@ fn main() {
     unsafe {
         gl::Enable(gl::BLEND);
         gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        // gl::Enable(gl::DEBUG_OUTPUT);
+        // gl::DebugMessageCallback(Some(debug_callback), ptr::null());
     }
 
-    let image = image::open("assets/textures/belt-1.png").unwrap().flipv();
-    let image = image.as_rgba8().unwrap();
-    let mut tex = 0;
+    let _debug_callback = unsafe {
+        DebugCallback::new(|message| {
+            println!("{:?}", message);
+        })
+    };
 
-    unsafe {
-        // load texture
-        gl::CreateTextures(gl::TEXTURE_2D, 1, &mut tex);
-        gl::TextureParameteri(tex, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
-        gl::TextureParameteri(tex, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
-        gl::TextureParameteri(tex, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-        gl::TextureParameteri(tex, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-
-        gl::TextureStorage2D(
-            tex,
-            1,
-            gl::RGBA8,
-            image.width() as i32,
-            image.height() as i32,
+    let tex = unsafe { Texture::from_path("assets/textures/belt-1.png", true) };
+    println!("{:?}", tex);
+    let quad_va = unsafe {
+        let vb = VertexBuffer::new(
+            &QUAD_DATA,
+            vec![
+                VertexBufferElement::floats(2),
+                VertexBufferElement::floats(2),
+            ],
         );
-        gl::TextureSubImage2D(
-            tex,
-            0,
-            0,
-            0,
-            image.width() as i32,
-            image.height() as i32,
-            gl::RGBA,
-            gl::UNSIGNED_BYTE,
-            image.as_raw().as_ptr() as *const c_void,
-        );
-    }
+        VertexArray::new(&[vb])
+    };
 
-    let mut quad_vao = 0;
-    let mut line_vao = 0;
-
-    unsafe {
-        // quad
-        let mut vbo = 0;
-        gl::CreateBuffers(1, &mut vbo);
-        gl::NamedBufferStorage(
-            vbo,
-            (QUAD_DATA.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
-            mem::transmute(&QUAD_DATA[0]),
-            gl::DYNAMIC_STORAGE_BIT,
-        );
-
-        gl::CreateVertexArrays(1, &mut quad_vao);
-
-        gl::VertexArrayVertexBuffer(
-            quad_vao,
-            0,
-            vbo,
-            0,
-            4 * mem::size_of::<GLfloat>() as GLsizei,
-        );
-
-        gl::EnableVertexArrayAttrib(quad_vao, 0);
-        gl::EnableVertexArrayAttrib(quad_vao, 1);
-
-        gl::VertexArrayAttribFormat(quad_vao, 0, 2, gl::FLOAT, gl::FALSE, 0);
-        gl::VertexArrayAttribFormat(
-            quad_vao,
-            1,
-            2,
-            gl::FLOAT,
-            gl::FALSE,
-            2 * mem::size_of::<GLfloat>() as GLuint,
-        );
-
-        gl::VertexArrayAttribBinding(quad_vao, 0, 0);
-        gl::VertexArrayAttribBinding(quad_vao, 1, 0);
-
-        // line
-        let mut vbo = 0;
-        gl::CreateBuffers(1, &mut vbo);
-        gl::NamedBufferStorage(
-            vbo,
-            (LINE_DATA.len() * mem::size_of::<GLfloat>()) as GLsizeiptr,
-            mem::transmute(&LINE_DATA[0]),
-            gl::DYNAMIC_STORAGE_BIT,
-        );
-
-        gl::CreateVertexArrays(1, &mut line_vao);
-
-        gl::VertexArrayVertexBuffer(
-            line_vao,
-            0,
-            vbo,
-            0,
-            2 * mem::size_of::<GLfloat>() as GLsizei,
-        );
-
-        gl::EnableVertexArrayAttrib(line_vao, 0);
-        gl::VertexArrayAttribFormat(line_vao, 0, 2, gl::FLOAT, gl::FALSE, 0);
-        gl::VertexArrayAttribBinding(line_vao, 0, 0);
-    }
+    let line_va = unsafe {
+        let vb = VertexBuffer::new(&LINE_DATA, vec![VertexBufferElement::floats(2)]);
+        VertexArray::new(&[vb])
+    };
 
     let mut camera = Camera::new();
     camera.position.x = 300.0;
@@ -253,7 +184,7 @@ fn main() {
 
                 if keyboard_state.was_pressed(VirtualKeyCode::T) {
                     current_belt.output = match current_belt.turn() {
-                        Turn::Right => current_belt.output.rotate_clockwise().rotate_clockwise(),
+                        Turn::Right => current_belt.output.flip(),
                         _ => current_belt.output.rotate_clockwise(),
                     };
                 }
@@ -263,7 +194,6 @@ fn main() {
                 is_placing = !is_placing;
             }
 
-            println!("{}", zoom);
             if keyboard_state.is_pressed(VirtualKeyCode::W) {
                 camera.move_vertical(10.0 / zoom);
             } else if keyboard_state.is_pressed(VirtualKeyCode::S) {
@@ -302,7 +232,7 @@ fn main() {
                 gl::ClearColor(0.3, 0.3, 0.6, 1.0);
                 gl::Clear(gl::COLOR_BUFFER_BIT);
 
-                gl::BindTextureUnit(0, tex);
+                tex.bind_to_unit(0);
 
                 tex_shader.enable();
                 tex_shader.set_int(&CString::new("atlas_size").unwrap(), 2);
@@ -315,7 +245,7 @@ fn main() {
                         zoom,
                     ),
                 );
-                gl::BindVertexArray(quad_vao);
+                quad_va.bind();
 
                 for (y, row) in grid.tiles.iter().enumerate() {
                     for (x, tile) in row.iter().enumerate() {
@@ -392,7 +322,7 @@ fn main() {
                 }
 
                 if debug_grid {
-                    gl::BindVertexArray(line_vao);
+                    line_va.bind();
                     base_shader.enable();
                     base_shader.set_mat4(&CString::new("view").unwrap(), camera.view_matrix());
                     base_shader.set_mat4(
@@ -435,289 +365,49 @@ fn main() {
     });
 }
 
-struct Camera {
-    position: Point2<GLfloat>,
-}
+// extern "system" fn debug_callback(
+//     source: GLenum,
+//     type_: GLenum,
+//     id: GLenum,
+//     severity: GLenum,
+//     length: GLsizei,
+//     message: *const GLchar,
+//     _user_param: *mut c_void,
+// ) {
+//     let source_string = match source {
+//         gl::DEBUG_SOURCE_API => "API",
+//         gl::DEBUG_SOURCE_WINDOW_SYSTEM => "WINDOW SYSTEM",
+//         gl::DEBUG_SOURCE_SHADER_COMPILER => "SHADER COMPILER",
+//         gl::DEBUG_SOURCE_THIRD_PARTY => "THIRD PARTY",
+//         gl::DEBUG_SOURCE_APPLICATION => "APPLICATION",
+//         gl::DEBUG_SOURCE_OTHER => "OTHER",
+//         _ => unreachable!(),
+//     };
 
-static CAMERA_DIRECTION: Vector3<GLfloat> = vec3(0.0, 0.0, -1.0);
-static CAMERA_UP: Vector3<GLfloat> = vec3(0.0, 1.0, 0.0);
+//     let type_string = match type_ {
+//         gl::DEBUG_TYPE_ERROR => "ERROR",
+//         gl::DEBUG_TYPE_DEPRECATED_BEHAVIOR => "DEPRECATED_BEHAVIOR",
+//         gl::DEBUG_TYPE_UNDEFINED_BEHAVIOR => "UNDEFINED_BEHAVIOR",
+//         gl::DEBUG_TYPE_PORTABILITY => "PORTABILITY",
+//         gl::DEBUG_TYPE_PERFORMANCE => "PERFORMANCE",
+//         gl::DEBUG_TYPE_MARKER => "MARKER",
+//         gl::DEBUG_TYPE_OTHER => "OTHER",
+//         _ => unreachable!(),
+//     };
 
-impl Camera {
-    fn new() -> Self {
-        Self {
-            position: point2(0.0, 0.0),
-        }
-    }
+//     let severity_string = match severity {
+//         gl::DEBUG_SEVERITY_NOTIFICATION => "NOTIFICATION",
+//         gl::DEBUG_SEVERITY_LOW => "LOW",
+//         gl::DEBUG_SEVERITY_MEDIUM => "MEDIUM",
+//         gl::DEBUG_SEVERITY_HIGH => "HIGH",
+//         _ => unreachable!(),
+//     };
 
-    fn move_horizontal(&mut self, amount: f32) {
-        self.position.x += amount;
-    }
+//     let message_string =
+//         unsafe { String::from_raw_parts(message as *mut u8, length as usize, length as usize) };
 
-    fn move_vertical(&mut self, amount: f32) {
-        self.position.y += amount;
-    }
-
-    fn view_matrix(&self) -> Matrix4<GLfloat> {
-        Matrix4::look_to_rh(
-            point3(self.position.x, self.position.y, 1.0),
-            CAMERA_DIRECTION,
-            CAMERA_UP,
-        )
-    }
-
-    fn projection_matrix(&self, width: GLfloat, height: GLfloat, zoom: f32) -> Matrix4<GLfloat> {
-        ortho(
-            -width / zoom / 2.0,
-            width / zoom / 2.0,
-            -height / zoom / 2.0,
-            height / zoom / 2.0,
-            1.0,
-            -1.0,
-        )
-    }
-}
-
-struct Grid {
-    tiles: [[Option<Belt>; 128]; 128],
-}
-
-impl Grid {
-    fn new() -> Self {
-        Self {
-            tiles: [[None; 128]; 128],
-        }
-    }
-
-    fn place_belt(&mut self, x: isize, y: isize, belt: Belt) {
-        let belt = self.calculate_belt_position(x, y, belt);
-        // Adjust input of belt in front
-        // - -
-        //   |
-        // front belt direction west/east
-        // current belt direction north
-        if let (Some(mut front_belt), (front_belt_x, front_belt_y)) =
-            self.belt_in_front_of(x, y, belt)
-        {
-            if (front_belt.input == belt.output.rotate_clockwise()
-                || front_belt.input == belt.output.rotate_anti_clockwise())
-                && self
-                    .belt_behind(front_belt_x, front_belt_y, front_belt)
-                    .0
-                    .is_none()
-            {
-                front_belt.input = belt.output.flip();
-                self.set_belt_in_front_of(x, y, belt, front_belt);
-            } else if front_belt.output == belt.output.rotate_clockwise()
-                || front_belt.output == belt.output.rotate_anti_clockwise()
-            {
-                if front_belt.input == belt.output {
-                    front_belt.input = front_belt.output.flip();
-                    self.set_belt_in_front_of(x, y, belt, front_belt);
-                }
-            } else if front_belt.output == belt.output && front_belt.input != belt.output.flip() {
-                front_belt.input = front_belt.output.flip();
-                self.set_belt_in_front_of(x, y, belt, front_belt);
-            }
-        }
-
-        self.set_belt(x, y, belt);
-    }
-
-    fn calculate_belt_position(&self, x: isize, y: isize, mut belt: Belt) -> Belt {
-        let (belt_behind, _) = self.belt_behind(x, y, belt);
-        if let Some(belt_behind) = belt_behind {
-            if belt_behind.output == belt.input.flip() {
-                return belt;
-            }
-        }
-
-        let (left_belt, a) = self.belt_left_of(x, y, belt);
-        let (right_belt, b) = self.belt_right_of(x, y, belt);
-        if left_belt.is_some() && right_belt.is_some() {
-            let left_belt = left_belt.unwrap();
-            let right_belt = right_belt.unwrap();
-
-            let left_belt_facing_into = left_belt.output == belt.output.rotate_clockwise();
-            let right_belt_facing_into = right_belt.output == belt.output.rotate_anti_clockwise();
-
-            if left_belt_facing_into && !right_belt_facing_into {
-                belt.input = left_belt.output.flip();
-            } else if !left_belt_facing_into && right_belt_facing_into {
-                belt.input = right_belt.output.flip();
-            }
-        } else if let Some(left_belt) = left_belt {
-            let left_belt_facing_into = left_belt.output == belt.output.rotate_clockwise();
-
-            if left_belt_facing_into {
-                belt.input = left_belt.output.flip();
-            }
-        } else if let Some(right_belt) = right_belt {
-            let right_belt_facing_into = right_belt.output == belt.output.rotate_anti_clockwise();
-
-            if right_belt_facing_into {
-                belt.input = right_belt.output.flip();
-            }
-        }
-
-        belt
-    }
-
-    fn clear_tile(&mut self, x: usize, y: usize) {
-        self.tiles[y][x] = None;
-    }
-
-    fn get_belt(&self, x: isize, y: isize) -> Option<Belt> {
-        if x >= 0 && x < self.tiles[0].len() as isize && y >= 0 && y < self.tiles.len() as isize {
-            self.tiles[y as usize][x as usize]
-        } else {
-            None
-        }
-    }
-
-    fn set_belt(&mut self, x: isize, y: isize, belt: Belt) {
-        if x >= 0 && x < self.tiles[0].len() as isize && y >= 0 && y < self.tiles.len() as isize {
-            self.tiles[y as usize][x as usize] = Some(belt);
-        }
-    }
-
-    fn left_pos(x: isize, y: isize, belt: Belt) -> (isize, isize) {
-        match belt.output {
-            Direction::West => (x, y - 1),
-            Direction::North => (x - 1, y),
-            Direction::East => (x, y + 1),
-            Direction::South => (x + 1, y),
-        }
-    }
-
-    fn right_pos(x: isize, y: isize, belt: Belt) -> (isize, isize) {
-        match belt.output {
-            Direction::West => (x, y + 1),
-            Direction::North => (x + 1, y),
-            Direction::East => (x, y - 1),
-            Direction::South => (x - 1, y),
-        }
-    }
-
-    fn front_pos(x: isize, y: isize, belt: Belt) -> (isize, isize) {
-        match belt.output {
-            Direction::West => (x - 1, y),
-            Direction::North => (x, y + 1),
-            Direction::East => (x + 1, y),
-            Direction::South => (x, y - 1),
-        }
-    }
-
-    fn behind_pos(x: isize, y: isize, belt: Belt) -> (isize, isize) {
-        match belt.input {
-            Direction::West => (x - 1, y),
-            Direction::North => (x, y + 1),
-            Direction::East => (x + 1, y),
-            Direction::South => (x, y - 1),
-        }
-    }
-
-    fn belt_left_of(&self, x: isize, y: isize, belt: Belt) -> (Option<Belt>, (isize, isize)) {
-        let (x, y) = Self::left_pos(x, y, belt);
-        (self.get_belt(x, y), (x, y))
-    }
-
-    fn belt_right_of(&self, x: isize, y: isize, belt: Belt) -> (Option<Belt>, (isize, isize)) {
-        let (x, y) = Self::right_pos(x, y, belt);
-        (self.get_belt(x, y), (x, y))
-    }
-
-    fn belt_in_front_of(&self, x: isize, y: isize, belt: Belt) -> (Option<Belt>, (isize, isize)) {
-        let (x, y) = Self::front_pos(x, y, belt);
-        (self.get_belt(x, y), (x, y))
-    }
-
-    fn set_belt_in_front_of(&mut self, x: isize, y: isize, belt: Belt, new_belt: Belt) {
-        let (x, y) = Self::front_pos(x, y, belt);
-        self.set_belt(x, y, new_belt);
-    }
-
-    fn belt_behind(&self, x: isize, y: isize, belt: Belt) -> (Option<Belt>, (isize, isize)) {
-        let (x, y) = Self::behind_pos(x, y, belt);
-        (self.get_belt(x, y), (x, y))
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Belt {
-    input: Direction,
-    output: Direction,
-}
-
-impl Belt {
-    fn new() -> Self {
-        Self {
-            input: Direction::West,
-            output: Direction::East,
-        }
-    }
-}
-
-impl Belt {
-    fn turn(&self) -> Turn {
-        let dir = self.input.rotate_clockwise();
-        if dir == self.output {
-            return Turn::Left;
-        }
-
-        let dir = dir.rotate_clockwise();
-        if dir == self.output {
-            return Turn::Forward;
-        }
-
-        let dir = dir.rotate_clockwise();
-        if dir == self.output {
-            return Turn::Right;
-        }
-
-        panic!();
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Direction {
-    West,
-    North,
-    East,
-    South,
-}
-
-impl Direction {
-    fn rotate_clockwise(&self) -> Self {
-        match *self {
-            Self::West => Self::North,
-            Self::North => Self::East,
-            Self::East => Self::South,
-            Self::South => Self::West,
-        }
-    }
-
-    fn rotate_anti_clockwise(&self) -> Self {
-        match *self {
-            Self::West => Self::South,
-            Self::North => Self::West,
-            Self::East => Self::North,
-            Self::South => Self::East,
-        }
-    }
-
-    fn flip(&self) -> Self {
-        match *self {
-            Self::West => Self::East,
-            Self::North => Self::South,
-            Self::East => Self::West,
-            Self::South => Self::North,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Turn {
-    Left,
-    Forward,
-    Right,
-}
+//     println!(
+//         "{}, {}, {}, {}: {}",
+//         source_string, type_string, severity_string, id, message_string
+//     );
+// }
