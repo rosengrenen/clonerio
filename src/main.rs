@@ -1,14 +1,13 @@
 mod camera;
 mod grid;
-mod keyboard;
+mod input;
 mod renderer;
 
 use std::{ffi::CString, time::Instant};
 
-use cgmath::{vec2, vec3, vec4, Deg, Matrix2, Matrix4, Rad};
+use cgmath::{vec3, vec4, Deg, Matrix2, Matrix4, Rad};
 use gl::types::*;
-use glutin::event::ElementState;
-use keyboard::KeyboardState;
+use input::{KeyboardState, MouseState};
 use renderer::{shader::Shader, texture::Texture, vertex_buffer::VertexBuffer};
 
 use crate::{
@@ -84,12 +83,9 @@ fn main() {
     camera.position.y = 300.0;
 
     let mut keyboard_state = KeyboardState::new();
+    let mut mouse_state = MouseState::new();
 
     let mut grid = Grid::new();
-
-    let mut mouse_pos = vec2(0.0, 0.0);
-    let mut mouse_left = false;
-    let mut mouse_right = false;
 
     let mut zoom = 2.0;
 
@@ -103,63 +99,23 @@ fn main() {
     let mut is_placing = true;
 
     event_loop.run(move |event, _, control_flow| {
-        use glutin::event::{
-            DeviceEvent, Event, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode,
-            WindowEvent,
-        };
+        use glutin::event::{Event, MouseButton, VirtualKeyCode, WindowEvent};
         use glutin::event_loop::ControlFlow;
         *control_flow = ControlFlow::Poll;
 
         match event {
             Event::LoopDestroyed => return,
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-                WindowEvent::Resized(size) => unsafe {
-                    gl::Viewport(0, 0, size.width as i32, size.height as i32);
-                },
-                WindowEvent::CursorMoved { position, .. } => {
-                    mouse_pos.x = position.x as f32;
-                    mouse_pos.y = position.y as f32;
-                }
-                WindowEvent::MouseInput { button, state, .. } => match button {
-                    MouseButton::Left => {
-                        if state == ElementState::Pressed {
-                            mouse_left = true;
-                        } else {
-                            mouse_left = false;
-                        }
-                    }
-                    MouseButton::Right => {
-                        if state == ElementState::Pressed {
-                            mouse_right = true;
-                        } else {
-                            mouse_right = false;
-                        }
-                    }
+            Event::WindowEvent { event, .. } => {
+                keyboard_state.process_event(&event);
+                mouse_state.process_event(&event);
+                match event {
+                    WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                    WindowEvent::Resized(size) => unsafe {
+                        gl::Viewport(0, 0, size.width as i32, size.height as i32);
+                    },
                     _ => (),
-                },
-                _ => (),
-            },
-            Event::DeviceEvent { event, .. } => match event {
-                DeviceEvent::Key(KeyboardInput {
-                    state,
-                    virtual_keycode: Some(virtual_keycode),
-                    ..
-                }) => {
-                    keyboard_state.process_event(state, virtual_keycode);
                 }
-                DeviceEvent::MouseWheel { delta } => match delta {
-                    MouseScrollDelta::LineDelta(_, y) => {
-                        if y < 0.0 {
-                            zoom *= 1.0 + -y / 100.0;
-                        } else {
-                            zoom /= 1.0 + y / 100.0;
-                        }
-                    }
-                    _ => (),
-                },
-                _ => (),
-            },
+            }
             _ => (),
         }
 
@@ -181,13 +137,6 @@ fn main() {
                     current_belt.input = current_belt.input.rotate_clockwise();
                     current_belt.output = current_belt.output.rotate_clockwise();
                 }
-
-                if keyboard_state.was_pressed(VirtualKeyCode::T) {
-                    current_belt.output = match current_belt.turn() {
-                        Turn::Right => current_belt.output.flip(),
-                        _ => current_belt.output.rotate_clockwise(),
-                    };
-                }
             }
 
             if keyboard_state.was_pressed(VirtualKeyCode::Space) {
@@ -206,11 +155,17 @@ fn main() {
                 camera.move_horizontal(-10.0 / zoom);
             }
 
+            if mouse_state.scroll_delta < 0.0 {
+                zoom /= 1.0 + -mouse_state.scroll_delta / 10.0;
+            } else {
+                zoom *= 1.0 + mouse_state.scroll_delta / 10.0;
+            }
+
             let window_size = gl_window.window().inner_size();
 
             let mut mouse_grid_pos = camera.position * zoom;
-            mouse_grid_pos.x += mouse_pos.x - window_size.width as f32 / 2.0;
-            mouse_grid_pos.y += window_size.height as f32 / 2.0 - mouse_pos.y;
+            mouse_grid_pos.x += mouse_state.position.x as f32 - window_size.width as f32 / 2.0;
+            mouse_grid_pos.y += window_size.height as f32 / 2.0 - mouse_state.position.y as f32;
 
             let mouse_grid_x = (mouse_grid_pos.x / 32.0 / zoom).floor() as i32;
             let mouse_grid_y = (mouse_grid_pos.y / 32.0 / zoom).floor() as i32;
@@ -218,11 +173,11 @@ fn main() {
             let mouse_in_grid =
                 mouse_grid_x >= 0 && mouse_grid_x < 128 && mouse_grid_y >= 0 && mouse_grid_y < 128;
             if is_placing && mouse_in_grid {
-                if mouse_left {
+                if mouse_state.is_pressed(MouseButton::Left) {
                     grid.place_belt(mouse_grid_x as isize, mouse_grid_y as isize, current_belt);
                 }
 
-                if mouse_right {
+                if mouse_state.is_pressed(MouseButton::Right) {
                     grid.clear_tile(mouse_grid_x as usize, mouse_grid_y as usize);
                 }
             }
@@ -361,6 +316,7 @@ fn main() {
             }
             gl_window.swap_buffers().unwrap();
             keyboard_state.clear_momentary_state();
+            mouse_state.clear_momentary_state();
         }
     });
 }
